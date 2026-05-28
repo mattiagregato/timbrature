@@ -1,4 +1,4 @@
-const CACHE = "timbrature-v1";
+const CACHE = "timbrature-v2"; // ← cambiato da v1 a v2
 const ASSETS = [
   "./",
   "./index.html",
