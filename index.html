@@ -25,6 +25,9 @@
 <script type="text/babel">
 const { useState, useEffect } = React;
 
+// ⬇️ INCOLLA QUI LA URL DEL TUO APPS SCRIPT DOPO IL DEPLOY
+const SHEETS_URL = "https://script.google.com/macros/s/AKfycbxzIJfs2Q4pn2Fismx5_xHxvcyD6EBkLUsVo5Q2l8HtkTdJxXfuGz2pWC2Go6M9WE5zyg/exec";
+
 const STORAGE_KEY = "timbrature-v1";
 const TARGET_H = 8;
 
@@ -37,8 +40,8 @@ const getState = r => { if(!r||!r.entrata)return 0; if(!r.inizioPausa)return 1; 
 
 const calcHours = (r, now=new Date()) => {
   if(!r||!r.entrata)return null;
-  const e=new Date(r.entrata), ip=r.inizioPausa?new Date(r.inizioPausa):null;
-  const fp=r.finePausa?new Date(r.finePausa):null, u=r.uscita?new Date(r.uscita):null;
+  const e=new Date(r.entrata),ip=r.inizioPausa?new Date(r.inizioPausa):null;
+  const fp=r.finePausa?new Date(r.finePausa):null,u=r.uscita?new Date(r.uscita):null;
   let tot=0;
   if(ip){tot+=(ip-e)/3.6e6;}else{return(now-e)/3.6e6;}
   if(fp){tot+=((u||now)-fp)/3.6e6;}
@@ -51,76 +54,118 @@ const calcExit = r => {
   return new Date(fp.getTime()+(TARGET_H-(ip-e)/3.6e6)*3.6e6);
 };
 
-const STAMPS = [
+const sheetsOk = () => SHEETS_URL && !SHEETS_URL.includes("INSERISCI");
+
+const syncToSheets = (date, field, time) => {
+  if(!sheetsOk()) return;
+  fetch(SHEETS_URL, { method:"POST", mode:"no-cors", body:JSON.stringify({date,field,time}) }).catch(()=>{});
+};
+
+const restoreFromSheets = () => new Promise(resolve => {
+  if(!sheetsOk()){resolve(null);return;}
+  const cb = "_sr_"+Date.now(), script = document.createElement("script");
+  let done = false;
+  const cleanup = () => { delete window[cb]; try{document.head.removeChild(script);}catch{} };
+  window[cb] = data => { done=true; cleanup(); resolve(data.records||{}); };
+  script.src = `${SHEETS_URL}?callback=${cb}`;
+  script.onerror = () => { if(!done){cleanup();resolve(null);} };
+  document.head.appendChild(script);
+  setTimeout(()=>{ if(!done){cleanup();resolve(null);} },8000);
+});
+
+const STAMPS=[
   {label:"Timbra Entrata",      icon:"▶",color:"#22c55e"},
   {label:"Inizio Pausa Pranzo", icon:"⏸",color:"#f59e0b"},
   {label:"Fine Pausa Pranzo",   icon:"▶",color:"#3b82f6"},
   {label:"Timbra Uscita",       icon:"⏹",color:"#ef4444"},
 ];
-
-const TABS = [
-  {k:"oggi",     label:"Oggi",      icon:"⏱"},
-  {k:"calendario",label:"Mese",     icon:"📅"},
-  {k:"storico",  label:"Storico",   icon:"📋"},
-  {k:"report",   label:"Report",    icon:"📊"},
+const TABS=[
+  {k:"oggi",       label:"Oggi",    icon:"⏱"},
+  {k:"calendario", label:"Mese",    icon:"📅"},
+  {k:"storico",    label:"Storico", icon:"📋"},
+  {k:"report",     label:"Report",  icon:"📊"},
 ];
 
 function App() {
-  const [records,setRecords] = useState({});
-  const [now,setNow] = useState(new Date());
-  const [tab,setTab] = useState("oggi");
-  const [calMonth,setCalMonth] = useState(new Date());
-  const [selDay,setSelDay] = useState(null);
-  const [justStamped,setJustStamped] = useState(false);
-  const [reportMonth,setReportMonth] = useState(`${new Date().getFullYear()}-${fmt2(new Date().getMonth()+1)}`);
-  const [downloaded,setDownloaded] = useState(false);
+  const [records,setRecords]=useState({});
+  const [now,setNow]=useState(new Date());
+  const [tab,setTab]=useState("oggi");
+  const [calMonth,setCalMonth]=useState(new Date());
+  const [selDay,setSelDay]=useState(null);
+  const [justStamped,setJustStamped]=useState(false);
+  const [reportMonth,setReportMonth]=useState(`${new Date().getFullYear()}-${fmt2(new Date().getMonth()+1)}`);
+  const [downloaded,setDownloaded]=useState(false);
+  const [syncStatus,setSyncStatus]=useState("idle");
+  const [loading,setLoading]=useState(true);
 
   useEffect(()=>{
-    try{ const d=localStorage.getItem(STORAGE_KEY); if(d)setRecords(JSON.parse(d)); }catch{}
+    (async()=>{
+      let local=null;
+      try{const d=localStorage.getItem(STORAGE_KEY);if(d)local=JSON.parse(d);}catch{}
+      if(local&&Object.keys(local).length>0){
+        setRecords(local);setLoading(false);
+      } else if(sheetsOk()){
+        setSyncStatus("syncing");
+        const remote=await restoreFromSheets();
+        if(remote&&Object.keys(remote).length>0){
+          setRecords(remote);
+          try{localStorage.setItem(STORAGE_KEY,JSON.stringify(remote));}catch{}
+          setSyncStatus("synced");
+        } else { setSyncStatus(remote===null?"error":"idle"); }
+        setLoading(false);
+      } else { setLoading(false); }
+    })();
   },[]);
-  useEffect(()=>{ const t=setInterval(()=>setNow(new Date()),1000); return()=>clearInterval(t); },[]);
 
-  const save = rec => { setRecords(rec); try{localStorage.setItem(STORAGE_KEY,JSON.stringify(rec));}catch{} };
+  useEffect(()=>{const t=setInterval(()=>setNow(new Date()),1000);return()=>clearInterval(t);},[]);
 
-  const stamp = () => {
-    const key=todayKey(), ts=new Date().toISOString();
-    const rec={...(records[key]||{})}, st=getState(rec);
-    if(st===0)rec.entrata=ts; else if(st===1)rec.inizioPausa=ts;
-    else if(st===2)rec.finePausa=ts; else if(st===3)rec.uscita=ts;
-    save({...records,[key]:rec});
-    setJustStamped(true); setTimeout(()=>setJustStamped(false),1200);
+  const save=rec=>{setRecords(rec);try{localStorage.setItem(STORAGE_KEY,JSON.stringify(rec));}catch{}};
+
+  const stamp=()=>{
+    const key=todayKey(),ts=new Date().toISOString();
+    const rec={...(records[key]||{})},st=getState(rec);
+    const fields=["entrata","inizioPausa","finePausa","uscita"];
+    if(st<4){
+      rec[fields[st]]=ts;
+      save({...records,[key]:rec});
+      syncToSheets(key,fields[st],ts);
+      setSyncStatus("synced");
+    }
+    setJustStamped(true);setTimeout(()=>setJustStamped(false),1200);
   };
 
-  const exportCSV = () => {
-    const entries = Object.entries(records)
-      .filter(([k])=>k.startsWith(reportMonth))
-      .sort(([a],[b])=>a.localeCompare(b));
-    if(entries.length===0){ alert("Nessun dato per questo mese."); return; }
-    const headers = ["Data","Giorno","Entrata","Inizio Pausa","Fine Pausa","Uscita","Ore Lavorate","Stato"];
-    const rows = entries.map(([k,r])=>{
+  const forceSyncFromSheets=async()=>{
+    if(!sheetsOk()){alert("URL Google Script non configurato.");return;}
+    setSyncStatus("syncing");
+    const remote=await restoreFromSheets();
+    if(remote){save(remote);setSyncStatus("synced");}
+    else setSyncStatus("error");
+  };
+
+  const exportCSV=()=>{
+    const entries=Object.entries(records).filter(([k])=>k.startsWith(reportMonth)).sort(([a],[b])=>a.localeCompare(b));
+    if(!entries.length){alert("Nessun dato per questo mese.");return;}
+    const headers=["Data","Giorno","Entrata","Inizio Pausa","Fine Pausa","Uscita","Ore Lavorate","Stato"];
+    const rows=entries.map(([k,r])=>{
       const d=new Date(k+"T12:00:00");
-      return [
-        d.toLocaleDateString("it-IT",{day:"2-digit",month:"2-digit",year:"numeric"}),
+      return[d.toLocaleDateString("it-IT",{day:"2-digit",month:"2-digit",year:"numeric"}),
         d.toLocaleDateString("it-IT",{weekday:"long"}),
-        fmtTime(r.entrata), fmtTime(r.inizioPausa),
-        fmtTime(r.finePausa), fmtTime(r.uscita),
-        fmtHDec(calcHours(r)),
-        r.uscita?"Completa":"Incompleta",
-      ];
+        fmtTime(r.entrata),fmtTime(r.inizioPausa),fmtTime(r.finePausa),fmtTime(r.uscita),
+        fmtHDec(calcHours(r)),r.uscita?"Completa":"Incompleta"];
     });
-    const tot = entries.reduce((s,[,r])=>s+(calcHours(r)||0),0);
+    const tot=entries.reduce((s,[,r])=>s+(calcHours(r)||0),0);
     rows.push(["TOTALE MESE",`${entries.length} giorni`,"","","","",fmtHDec(tot),""]);
-    const csv = [headers,...rows].map(r=>r.map(v=>`"${v}"`).join(";")).join("\n");
-    const blob = new Blob(["\uFEFF"+csv],{type:"text/csv;charset=utf-8;"});
-    const url = URL.createObjectURL(blob);
-    const a = document.createElement("a");
-    a.href=url; a.download=`timbrature_${reportMonth}.csv`; a.click();
+    const csv=[headers,...rows].map(r=>r.map(v=>`"${v}"`).join(";")).join("\n");
+    const blob=new Blob(["\uFEFF"+csv],{type:"text/csv;charset=utf-8;"});
+    const url=URL.createObjectURL(blob);
+    const a=document.createElement("a");
+    a.href=url;a.download=`timbrature_${reportMonth}.csv`;a.click();
     URL.revokeObjectURL(url);
-    setDownloaded(true); setTimeout(()=>setDownloaded(false),2000);
+    setDownloaded(true);setTimeout(()=>setDownloaded(false),2000);
   };
 
-  const today=records[todayKey()]||{}, state=getState(today);
-  const hours=calcHours(today,now), exitTime=calcExit(today);
+  const today=records[todayKey()]||{},state=getState(today);
+  const hours=calcHours(today,now),exitTime=calcExit(today);
   const pct=Math.min(((hours||0)/TARGET_H)*100,100);
   const countdown=exitTime?(()=>{const d=exitTime-now;if(d<=0)return null;const h=Math.floor(d/3.6e6),m=Math.floor((d%3.6e6)/60000);return`${h}h ${fmt2(m)}m`;})():null;
 
@@ -138,29 +183,42 @@ function App() {
     return{hrs:entries.reduce((s,[,r])=>s+(calcHours(r)||0),0),days:entries.length};
   })();
 
-  const reportEntries = Object.entries(records)
-    .filter(([k])=>k.startsWith(reportMonth))
-    .sort(([a],[b])=>a.localeCompare(b));
-  const reportTotal = reportEntries.reduce((s,[,r])=>s+(calcHours(r)||0),0);
-
+  const reportEntries=Object.entries(records).filter(([k])=>k.startsWith(reportMonth)).sort(([a],[b])=>a.localeCompare(b));
+  const reportTotal=reportEntries.reduce((s,[,r])=>s+(calcHours(r)||0),0);
+  const syncDot={idle:"#475569",syncing:"#f59e0b",synced:"#22c55e",error:"#ef4444"}[syncStatus];
   const card={background:"#1e293b",borderRadius:12,padding:16,marginBottom:14};
-  const rowS=(b)=>({display:"flex",justifyContent:"space-between",alignItems:"center",padding:"8px 0",borderBottom:b?"1px solid #334155":"none"});
+  const rowS=b=>({display:"flex",justifyContent:"space-between",alignItems:"center",padding:"8px 0",borderBottom:b?"1px solid #334155":"none"});
 
-  return (
+  if(loading)return(
+    <div style={{display:"flex",alignItems:"center",justifyContent:"center",height:"100vh",background:"#0f172a",flexDirection:"column",gap:16}}>
+      <div style={{fontSize:"2.5rem"}}>⏱</div>
+      <div style={{color:"#94a3b8"}}>Caricamento{sheetsOk()?" e sincronizzazione"}...</div>
+    </div>
+  );
+
+  return(
     <div style={{maxWidth:420,margin:"0 auto",minHeight:"100vh",background:"#0f172a",color:"white",display:"flex",flexDirection:"column"}}>
 
       {/* HEADER */}
-      <div style={{background:"#1e293b",padding:16,textAlign:"center",borderBottom:"1px solid #334155"}}>
+      <div style={{background:"#1e293b",padding:"14px 16px",textAlign:"center",borderBottom:"1px solid #334155",position:"relative"}}>
         <div style={{fontSize:"2.8rem",fontWeight:"bold",letterSpacing:2,fontVariantNumeric:"tabular-nums"}}>{now.toLocaleTimeString("it-IT")}</div>
         <div style={{color:"#94a3b8",fontSize:"0.85rem",marginTop:4}}>{now.toLocaleDateString("it-IT",{weekday:"long",day:"numeric",month:"long",year:"numeric"})}</div>
+        {sheetsOk()&&(
+          <div style={{position:"absolute",top:18,right:14,display:"flex",alignItems:"center",gap:5}}>
+            <div style={{width:8,height:8,borderRadius:"50%",background:syncDot,transition:"background 0.3s",
+              boxShadow:syncStatus==="syncing"?`0 0 6px ${syncDot}`:"none"}}/>
+            {syncStatus!=="idle"&&<span style={{fontSize:"0.6rem",color:syncDot}}>
+              {{syncing:"sync...",synced:"✓",error:"err"}[syncStatus]}
+            </span>}
+          </div>
+        )}
       </div>
 
       {/* TABS */}
       <div style={{display:"flex",background:"#1e293b",borderBottom:"1px solid #334155"}}>
         {TABS.map(({k,label,icon})=>(
           <button key={k} onClick={()=>setTab(k)} style={{flex:1,padding:"10px 4px",border:"none",background:"transparent",
-            color:tab===k?"#3b82f6":"#64748b",
-            borderBottom:tab===k?"2px solid #3b82f6":"2px solid transparent",
+            color:tab===k?"#3b82f6":"#64748b",borderBottom:tab===k?"2px solid #3b82f6":"2px solid transparent",
             cursor:"pointer",fontSize:"0.7rem",display:"flex",flexDirection:"column",alignItems:"center",gap:2}}>
             <span style={{fontSize:"1rem"}}>{icon}</span>
             <span style={{fontWeight:tab===k?"bold":"normal"}}>{label}</span>
@@ -282,7 +340,7 @@ function App() {
         {/* ── STORICO ── */}
         {tab==="storico"&&(
           <div>
-            {Object.keys(records).length===0?(
+            {!Object.keys(records).length?(
               <div style={{textAlign:"center",color:"#475569",padding:40}}>Nessuna timbratura ancora</div>
             ):(
               <>
@@ -317,43 +375,55 @@ function App() {
         {/* ── REPORT ── */}
         {tab==="report"&&(
           <div>
-            {/* Selettore mese + scarica */}
+            {/* Google Sheets status */}
+            {sheetsOk()&&(
+              <div style={{...card,border:"1px solid #334155"}}>
+                <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:10}}>
+                  <div>
+                    <div style={{fontSize:"0.9rem",color:"#cbd5e1",fontWeight:"bold"}}>☁ Google Fogli</div>
+                    <div style={{fontSize:"0.75rem",color:"#475569",marginTop:2}}>Backup automatico attivo ad ogni timbratura</div>
+                  </div>
+                  <div style={{width:10,height:10,borderRadius:"50%",background:syncDot,flexShrink:0}}/>
+                </div>
+                <button onClick={forceSyncFromSheets} style={{
+                  width:"100%",padding:11,background:"transparent",border:"1px solid #334155",
+                  color:"#94a3b8",borderRadius:8,cursor:"pointer",fontSize:"0.85rem"}}>
+                  {syncStatus==="syncing"?"⏳ Sincronizzando...":"↻  Ripristina da Google Fogli"}
+                </button>
+              </div>
+            )}
+
+            {/* Export */}
             <div style={card}>
-              <div style={{color:"#64748b",fontSize:"0.75rem",textTransform:"uppercase",letterSpacing:1,marginBottom:14}}>Seleziona il mese</div>
+              <div style={{color:"#64748b",fontSize:"0.75rem",textTransform:"uppercase",letterSpacing:1,marginBottom:14}}>📊 Scarica Report</div>
               <input type="month" value={reportMonth} onChange={e=>setReportMonth(e.target.value)}
                 style={{width:"100%",background:"#0f172a",border:"1px solid #334155",color:"white",
                   padding:"12px",borderRadius:8,fontSize:"1rem",outline:"none",marginBottom:14}}/>
               <button onClick={exportCSV} style={{
                 width:"100%",padding:16,fontSize:"1rem",fontWeight:"bold",
-                background:downloaded?"#16a34a":"#2563eb",
-                color:"white",border:"none",borderRadius:10,cursor:"pointer",
-                transition:"background 0.3s",
+                background:downloaded?"#16a34a":"#2563eb",color:"white",border:"none",
+                borderRadius:10,cursor:"pointer",transition:"background 0.3s",
                 boxShadow:downloaded?"none":"0 0 20px #2563eb40"}}>
                 {downloaded?"✓ File scaricato!":"⬇  Scarica Report Excel"}
               </button>
-              <div style={{color:"#475569",fontSize:"0.75rem",textAlign:"center",marginTop:10}}>
-                File .csv — si apre direttamente in Excel
-              </div>
+              <div style={{color:"#475569",fontSize:"0.75rem",textAlign:"center",marginTop:10}}>File .csv — si apre direttamente in Excel</div>
             </div>
 
-            {/* Anteprima mese selezionato */}
-            {reportEntries.length > 0 ? (
+            {/* Preview */}
+            {reportEntries.length>0?(
               <div style={card}>
                 <div style={{color:"#64748b",fontSize:"0.75rem",textTransform:"uppercase",letterSpacing:1,marginBottom:12}}>
                   Anteprima — {new Date(reportMonth+"-01").toLocaleDateString("it-IT",{month:"long",year:"numeric"})}
                 </div>
                 {reportEntries.map(([k,r])=>{
-                  const hrs=calcHours(r), st=getState(r);
+                  const hrs=calcHours(r),st=getState(r);
                   return(
-                    <div key={k} style={{display:"flex",justifyContent:"space-between",alignItems:"center",
-                      padding:"7px 0",borderBottom:"1px solid #334155"}}>
+                    <div key={k} style={{display:"flex",justifyContent:"space-between",alignItems:"center",padding:"7px 0",borderBottom:"1px solid #334155"}}>
                       <div>
                         <div style={{fontSize:"0.85rem",fontWeight:"bold",textTransform:"capitalize"}}>
                           {new Date(k+"T12:00:00").toLocaleDateString("it-IT",{weekday:"short",day:"numeric",month:"short"})}
                         </div>
-                        <div style={{fontSize:"0.72rem",color:"#64748b",marginTop:2}}>
-                          {fmtTime(r.entrata)} → {fmtTime(r.uscita)}
-                        </div>
+                        <div style={{fontSize:"0.72rem",color:"#64748b",marginTop:2}}>{fmtTime(r.entrata)} → {fmtTime(r.uscita)}</div>
                       </div>
                       <div style={{textAlign:"right"}}>
                         <div style={{fontWeight:"bold",color:hrs>=TARGET_H?"#22c55e":"#94a3b8",fontSize:"0.9rem"}}>{fmtHours(hrs)}</div>
@@ -374,7 +444,6 @@ function App() {
             )}
           </div>
         )}
-
       </div>
     </div>
   );
@@ -386,8 +455,7 @@ ReactDOM.createRoot(document.getElementById("root")).render(<App/>);
 if("serviceWorker" in navigator){
   window.addEventListener("load",()=>{
     navigator.serviceWorker.register("./service-worker.js")
-      .then(r=>console.log("SW registrato:",r.scope))
-      .catch(e=>console.log("SW errore:",e));
+      .then(r=>console.log("SW:",r.scope)).catch(e=>console.log("SW err:",e));
   });
 }
 </script>
