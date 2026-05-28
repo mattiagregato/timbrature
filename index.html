@@ -13,7 +13,6 @@
 <script src="https://cdnjs.cloudflare.com/ajax/libs/react/18.2.0/umd/react.production.min.js"></script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/react-dom/18.2.0/umd/react-dom.production.min.js"></script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/babel-standalone/7.23.2/babel.min.js"></script>
-<script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
 <style>
   *{box-sizing:border-box;margin:0;padding:0;-webkit-tap-highlight-color:transparent}
   body{background:#0f172a;color:white;font-family:system-ui,sans-serif}
@@ -33,7 +32,7 @@ const fmt2 = n => String(n).padStart(2,"0");
 const todayKey = () => { const d=new Date(); return `${d.getFullYear()}-${fmt2(d.getMonth()+1)}-${fmt2(d.getDate())}`; };
 const fmtTime = iso => iso ? new Date(iso).toLocaleTimeString("it-IT",{hour:"2-digit",minute:"2-digit"}) : "--:--";
 const fmtHours = h => { if(h===null||isNaN(h))return"--"; const hh=Math.floor(h),mm=Math.round((h-hh)*60); return `${hh}h ${fmt2(mm)}m`; };
-const fmtHoursDecimal = h => { if(h===null||isNaN(h))return"0:00"; const hh=Math.floor(h),mm=Math.round((h-hh)*60); return `${hh}:${fmt2(mm)}`; };
+const fmtHDec = h => { if(!h||isNaN(h))return"0:00"; const hh=Math.floor(h),mm=Math.round((h-hh)*60); return `${hh}:${fmt2(mm)}`; };
 const getState = r => { if(!r||!r.entrata)return 0; if(!r.inizioPausa)return 1; if(!r.finePausa)return 2; if(!r.uscita)return 3; return 4; };
 
 const calcHours = (r, now=new Date()) => {
@@ -53,10 +52,17 @@ const calcExit = r => {
 };
 
 const STAMPS = [
-  {label:"Timbra Entrata",       icon:"▶",color:"#22c55e"},
-  {label:"Inizio Pausa Pranzo",  icon:"⏸",color:"#f59e0b"},
-  {label:"Fine Pausa Pranzo",    icon:"▶",color:"#3b82f6"},
-  {label:"Timbra Uscita",        icon:"⏹",color:"#ef4444"},
+  {label:"Timbra Entrata",      icon:"▶",color:"#22c55e"},
+  {label:"Inizio Pausa Pranzo", icon:"⏸",color:"#f59e0b"},
+  {label:"Fine Pausa Pranzo",   icon:"▶",color:"#3b82f6"},
+  {label:"Timbra Uscita",       icon:"⏹",color:"#ef4444"},
+];
+
+const TABS = [
+  {k:"oggi",     label:"Oggi",      icon:"⏱"},
+  {k:"calendario",label:"Mese",     icon:"📅"},
+  {k:"storico",  label:"Storico",   icon:"📋"},
+  {k:"report",   label:"Report",    icon:"📊"},
 ];
 
 function App() {
@@ -67,11 +73,11 @@ function App() {
   const [selDay,setSelDay] = useState(null);
   const [justStamped,setJustStamped] = useState(false);
   const [reportMonth,setReportMonth] = useState(`${new Date().getFullYear()}-${fmt2(new Date().getMonth()+1)}`);
+  const [downloaded,setDownloaded] = useState(false);
 
   useEffect(()=>{
     try{ const d=localStorage.getItem(STORAGE_KEY); if(d)setRecords(JSON.parse(d)); }catch{}
   },[]);
-
   useEffect(()=>{ const t=setInterval(()=>setNow(new Date()),1000); return()=>clearInterval(t); },[]);
 
   const save = rec => { setRecords(rec); try{localStorage.setItem(STORAGE_KEY,JSON.stringify(rec));}catch{} };
@@ -85,51 +91,32 @@ function App() {
     setJustStamped(true); setTimeout(()=>setJustStamped(false),1200);
   };
 
-  const exportExcel = () => {
+  const exportCSV = () => {
     const entries = Object.entries(records)
-      .filter(([k]) => k.startsWith(reportMonth))
-      .sort(([a],[b]) => a.localeCompare(b));
-
-    if(entries.length === 0) { alert("Nessun dato per questo mese."); return; }
-
-    const rows = entries.map(([k,r]) => {
-      const hrs = calcHours(r);
-      return {
-        "Data": new Date(k+"T12:00:00").toLocaleDateString("it-IT",{day:"2-digit",month:"2-digit",year:"numeric"}),
-        "Giorno": new Date(k+"T12:00:00").toLocaleDateString("it-IT",{weekday:"long"}),
-        "Entrata": fmtTime(r.entrata),
-        "Inizio Pausa": fmtTime(r.inizioPausa),
-        "Fine Pausa": fmtTime(r.finePausa),
-        "Uscita": fmtTime(r.uscita),
-        "Ore Lavorate": fmtHoursDecimal(hrs),
-        "Stato": getState(r)===4 ? "✓ Completa" : "⚠ Incompleta",
-      };
+      .filter(([k])=>k.startsWith(reportMonth))
+      .sort(([a],[b])=>a.localeCompare(b));
+    if(entries.length===0){ alert("Nessun dato per questo mese."); return; }
+    const headers = ["Data","Giorno","Entrata","Inizio Pausa","Fine Pausa","Uscita","Ore Lavorate","Stato"];
+    const rows = entries.map(([k,r])=>{
+      const d=new Date(k+"T12:00:00");
+      return [
+        d.toLocaleDateString("it-IT",{day:"2-digit",month:"2-digit",year:"numeric"}),
+        d.toLocaleDateString("it-IT",{weekday:"long"}),
+        fmtTime(r.entrata), fmtTime(r.inizioPausa),
+        fmtTime(r.finePausa), fmtTime(r.uscita),
+        fmtHDec(calcHours(r)),
+        r.uscita?"Completa":"Incompleta",
+      ];
     });
-
-    const totalHrs = entries.reduce((s,[,r])=>s+(calcHours(r)||0),0);
-    rows.push({
-      "Data": "TOTALE MESE",
-      "Giorno": `${entries.length} giorni`,
-      "Entrata": "",
-      "Inizio Pausa": "",
-      "Fine Pausa": "",
-      "Uscita": "",
-      "Ore Lavorate": fmtHoursDecimal(totalHrs),
-      "Stato": "",
-    });
-
-    const ws = XLSX.utils.json_to_sheet(rows);
-
-    // Larghezza colonne
-    ws["!cols"] = [
-      {wch:12},{wch:14},{wch:10},{wch:14},{wch:12},{wch:10},{wch:14},{wch:12}
-    ];
-
-    const wb = XLSX.utils.book_new();
-    const [yr,mo] = reportMonth.split("-");
-    const monthName = new Date(yr,mo-1,1).toLocaleDateString("it-IT",{month:"long",year:"numeric"});
-    XLSX.utils.book_append_sheet(wb, ws, `Timbrature ${monthName}`);
-    XLSX.writeFile(wb, `timbrature_${reportMonth}.xlsx`);
+    const tot = entries.reduce((s,[,r])=>s+(calcHours(r)||0),0);
+    rows.push(["TOTALE MESE",`${entries.length} giorni`,"","","","",fmtHDec(tot),""]);
+    const csv = [headers,...rows].map(r=>r.map(v=>`"${v}"`).join(";")).join("\n");
+    const blob = new Blob(["\uFEFF"+csv],{type:"text/csv;charset=utf-8;"});
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href=url; a.download=`timbrature_${reportMonth}.csv`; a.click();
+    URL.revokeObjectURL(url);
+    setDownloaded(true); setTimeout(()=>setDownloaded(false),2000);
   };
 
   const today=records[todayKey()]||{}, state=getState(today);
@@ -151,22 +138,36 @@ function App() {
     return{hrs:entries.reduce((s,[,r])=>s+(calcHours(r)||0),0),days:entries.length};
   })();
 
+  const reportEntries = Object.entries(records)
+    .filter(([k])=>k.startsWith(reportMonth))
+    .sort(([a],[b])=>a.localeCompare(b));
+  const reportTotal = reportEntries.reduce((s,[,r])=>s+(calcHours(r)||0),0);
+
   const card={background:"#1e293b",borderRadius:12,padding:16,marginBottom:14};
-  const row=(b)=>({display:"flex",justifyContent:"space-between",alignItems:"center",padding:"8px 0",borderBottom:b?"1px solid #334155":"none"});
+  const rowS=(b)=>({display:"flex",justifyContent:"space-between",alignItems:"center",padding:"8px 0",borderBottom:b?"1px solid #334155":"none"});
 
   return (
     <div style={{maxWidth:420,margin:"0 auto",minHeight:"100vh",background:"#0f172a",color:"white",display:"flex",flexDirection:"column"}}>
+
+      {/* HEADER */}
       <div style={{background:"#1e293b",padding:16,textAlign:"center",borderBottom:"1px solid #334155"}}>
         <div style={{fontSize:"2.8rem",fontWeight:"bold",letterSpacing:2,fontVariantNumeric:"tabular-nums"}}>{now.toLocaleTimeString("it-IT")}</div>
         <div style={{color:"#94a3b8",fontSize:"0.85rem",marginTop:4}}>{now.toLocaleDateString("it-IT",{weekday:"long",day:"numeric",month:"long",year:"numeric"})}</div>
       </div>
+
+      {/* TABS */}
       <div style={{display:"flex",background:"#1e293b",borderBottom:"1px solid #334155"}}>
-        {[["oggi","Oggi"],["calendario","Calendario"],["storico","Storico"]].map(([k,l])=>(
-          <button key={k} onClick={()=>setTab(k)} style={{flex:1,padding:12,border:"none",background:"transparent",
-            color:tab===k?"#3b82f6":"#94a3b8",fontWeight:tab===k?"bold":"normal",
-            borderBottom:tab===k?"2px solid #3b82f6":"2px solid transparent",cursor:"pointer",fontSize:"0.9rem"}}>{l}</button>
+        {TABS.map(({k,label,icon})=>(
+          <button key={k} onClick={()=>setTab(k)} style={{flex:1,padding:"10px 4px",border:"none",background:"transparent",
+            color:tab===k?"#3b82f6":"#64748b",
+            borderBottom:tab===k?"2px solid #3b82f6":"2px solid transparent",
+            cursor:"pointer",fontSize:"0.7rem",display:"flex",flexDirection:"column",alignItems:"center",gap:2}}>
+            <span style={{fontSize:"1rem"}}>{icon}</span>
+            <span style={{fontWeight:tab===k?"bold":"normal"}}>{label}</span>
+          </button>
         ))}
       </div>
+
       <div style={{flex:1,overflowY:"auto",padding:16}}>
 
         {/* ── OGGI ── */}
@@ -175,7 +176,7 @@ function App() {
             <div style={card}>
               <div style={{color:"#64748b",fontSize:"0.75rem",textTransform:"uppercase",letterSpacing:1,marginBottom:10}}>Timbrature di oggi</div>
               {[["🟢 Entrata",today.entrata],["🟡 Inizio Pausa",today.inizioPausa],["🔵 Fine Pausa",today.finePausa],["🔴 Uscita",today.uscita]].map(([l,v],i)=>(
-                <div key={i} style={row(i<3)}>
+                <div key={i} style={rowS(i<3)}>
                   <span style={{color:"#cbd5e1",fontSize:"0.9rem"}}>{l}</span>
                   <span style={{fontWeight:"bold",fontVariantNumeric:"tabular-nums",color:v?"white":"#475569"}}>{fmtTime(v)}</span>
                 </div>
@@ -259,7 +260,7 @@ function App() {
                 </div>
                 {[["🟢 Entrata",records[selDay].entrata],["🟡 Inizio Pausa",records[selDay].inizioPausa],
                   ["🔵 Fine Pausa",records[selDay].finePausa],["🔴 Uscita",records[selDay].uscita]].map(([l,v],i)=>(
-                  <div key={i} style={row(i<3)}>
+                  <div key={i} style={rowS(i<3)}>
                     <span style={{color:"#cbd5e1",fontSize:"0.9rem"}}>{l}</span>
                     <span style={{fontWeight:"bold",color:v?"white":"#475569"}}>{fmtTime(v)}</span>
                   </div>
@@ -278,30 +279,9 @@ function App() {
           </div>
         )}
 
-        {/* ── STORICO + REPORT ── */}
+        {/* ── STORICO ── */}
         {tab==="storico"&&(
           <div>
-            {/* Export Excel */}
-            <div style={{...card,border:"1px solid #1d4ed8",background:"#0c1a2e"}}>
-              <div style={{color:"#93c5fd",fontSize:"0.8rem",textTransform:"uppercase",letterSpacing:1,marginBottom:12}}>📊 Report Mensile Excel</div>
-              <div style={{display:"flex",gap:10,alignItems:"center"}}>
-                <input
-                  type="month"
-                  value={reportMonth}
-                  onChange={e=>setReportMonth(e.target.value)}
-                  style={{flex:1,background:"#1e293b",border:"1px solid #334155",color:"white",
-                    padding:"10px 12px",borderRadius:8,fontSize:"0.95rem",outline:"none"}}
-                />
-                <button onClick={exportExcel} style={{
-                  background:"#2563eb",color:"white",border:"none",
-                  padding:"10px 16px",borderRadius:8,cursor:"pointer",
-                  fontWeight:"bold",fontSize:"0.9rem",whiteSpace:"nowrap"}}>
-                  ⬇ Scarica
-                </button>
-              </div>
-            </div>
-
-            {/* Lista storico */}
             {Object.keys(records).length===0?(
               <div style={{textAlign:"center",color:"#475569",padding:40}}>Nessuna timbratura ancora</div>
             ):(
@@ -333,6 +313,68 @@ function App() {
             )}
           </div>
         )}
+
+        {/* ── REPORT ── */}
+        {tab==="report"&&(
+          <div>
+            {/* Selettore mese + scarica */}
+            <div style={card}>
+              <div style={{color:"#64748b",fontSize:"0.75rem",textTransform:"uppercase",letterSpacing:1,marginBottom:14}}>Seleziona il mese</div>
+              <input type="month" value={reportMonth} onChange={e=>setReportMonth(e.target.value)}
+                style={{width:"100%",background:"#0f172a",border:"1px solid #334155",color:"white",
+                  padding:"12px",borderRadius:8,fontSize:"1rem",outline:"none",marginBottom:14}}/>
+              <button onClick={exportCSV} style={{
+                width:"100%",padding:16,fontSize:"1rem",fontWeight:"bold",
+                background:downloaded?"#16a34a":"#2563eb",
+                color:"white",border:"none",borderRadius:10,cursor:"pointer",
+                transition:"background 0.3s",
+                boxShadow:downloaded?"none":"0 0 20px #2563eb40"}}>
+                {downloaded?"✓ File scaricato!":"⬇  Scarica Report Excel"}
+              </button>
+              <div style={{color:"#475569",fontSize:"0.75rem",textAlign:"center",marginTop:10}}>
+                File .csv — si apre direttamente in Excel
+              </div>
+            </div>
+
+            {/* Anteprima mese selezionato */}
+            {reportEntries.length > 0 ? (
+              <div style={card}>
+                <div style={{color:"#64748b",fontSize:"0.75rem",textTransform:"uppercase",letterSpacing:1,marginBottom:12}}>
+                  Anteprima — {new Date(reportMonth+"-01").toLocaleDateString("it-IT",{month:"long",year:"numeric"})}
+                </div>
+                {reportEntries.map(([k,r])=>{
+                  const hrs=calcHours(r), st=getState(r);
+                  return(
+                    <div key={k} style={{display:"flex",justifyContent:"space-between",alignItems:"center",
+                      padding:"7px 0",borderBottom:"1px solid #334155"}}>
+                      <div>
+                        <div style={{fontSize:"0.85rem",fontWeight:"bold",textTransform:"capitalize"}}>
+                          {new Date(k+"T12:00:00").toLocaleDateString("it-IT",{weekday:"short",day:"numeric",month:"short"})}
+                        </div>
+                        <div style={{fontSize:"0.72rem",color:"#64748b",marginTop:2}}>
+                          {fmtTime(r.entrata)} → {fmtTime(r.uscita)}
+                        </div>
+                      </div>
+                      <div style={{textAlign:"right"}}>
+                        <div style={{fontWeight:"bold",color:hrs>=TARGET_H?"#22c55e":"#94a3b8",fontSize:"0.9rem"}}>{fmtHours(hrs)}</div>
+                        <div style={{fontSize:"0.7rem",color:st===4?"#16a34a":"#f59e0b",marginTop:2}}>{st===4?"✓":"⚠"}</div>
+                      </div>
+                    </div>
+                  );
+                })}
+                <div style={{display:"flex",justifyContent:"space-between",marginTop:12,paddingTop:12,borderTop:"1px solid #475569"}}>
+                  <span style={{color:"#94a3b8",fontSize:"0.9rem"}}>Totale ({reportEntries.length} giorni)</span>
+                  <span style={{fontWeight:"bold",color:"#3b82f6",fontSize:"1rem"}}>{fmtHours(reportTotal)}</span>
+                </div>
+              </div>
+            ):(
+              <div style={{textAlign:"center",color:"#475569",padding:30,background:"#1e293b",borderRadius:12}}>
+                Nessuna timbratura per questo mese
+              </div>
+            )}
+          </div>
+        )}
+
       </div>
     </div>
   );
@@ -341,11 +383,11 @@ function App() {
 ReactDOM.createRoot(document.getElementById("root")).render(<App/>);
 </script>
 <script>
-if("serviceWorker" in navigator) {
-  window.addEventListener("load", () => {
+if("serviceWorker" in navigator){
+  window.addEventListener("load",()=>{
     navigator.serviceWorker.register("./service-worker.js")
-      .then(r => console.log("SW registrato:", r.scope))
-      .catch(e => console.log("SW errore:", e));
+      .then(r=>console.log("SW registrato:",r.scope))
+      .catch(e=>console.log("SW errore:",e));
   });
 }
 </script>
