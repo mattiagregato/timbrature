@@ -1,0 +1,273 @@
+<!DOCTYPE html>
+<html lang="it">
+<head>
+<meta charset="UTF-8"/>
+<meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1"/>
+<meta name="mobile-web-app-capable" content="yes"/>
+<meta name="apple-mobile-web-app-capable" content="yes"/>
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent"/>
+<title>Timbrature</title>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/react/18.2.0/umd/react.production.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/react-dom/18.2.0/umd/react-dom.production.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/babel-standalone/7.23.2/babel.min.js"></script>
+<style>
+  *{box-sizing:border-box;margin:0;padding:0;-webkit-tap-highlight-color:transparent}
+  body{background:#0f172a;color:white;font-family:system-ui,sans-serif}
+  button{font-family:inherit}
+  ::-webkit-scrollbar{display:none}
+</style>
+</head>
+<body>
+<div id="root"></div>
+<script type="text/babel">
+const { useState, useEffect } = React;
+
+const STORAGE_KEY = "timbrature-v1";
+const TARGET_H = 8;
+
+const fmt2 = n => String(n).padStart(2,"0");
+const todayKey = () => { const d=new Date(); return `${d.getFullYear()}-${fmt2(d.getMonth()+1)}-${fmt2(d.getDate())}`; };
+const fmtTime = iso => iso ? new Date(iso).toLocaleTimeString("it-IT",{hour:"2-digit",minute:"2-digit"}) : "--:--";
+const fmtHours = h => { if(h===null||isNaN(h))return"--"; const hh=Math.floor(h),mm=Math.round((h-hh)*60); return `${hh}h ${fmt2(mm)}m`; };
+const getState = r => { if(!r||!r.entrata)return 0; if(!r.inizioPausa)return 1; if(!r.finePausa)return 2; if(!r.uscita)return 3; return 4; };
+
+const calcHours = (r, now=new Date()) => {
+  if(!r||!r.entrata)return null;
+  const e=new Date(r.entrata), ip=r.inizioPausa?new Date(r.inizioPausa):null;
+  const fp=r.finePausa?new Date(r.finePausa):null, u=r.uscita?new Date(r.uscita):null;
+  let tot=0;
+  if(ip){tot+=(ip-e)/3.6e6;}else{return(now-e)/3.6e6;}
+  if(fp){tot+=((u||now)-fp)/3.6e6;}
+  return tot;
+};
+
+const calcExit = r => {
+  if(!r||!r.entrata||!r.inizioPausa||!r.finePausa||r.uscita)return null;
+  const e=new Date(r.entrata),ip=new Date(r.inizioPausa),fp=new Date(r.finePausa);
+  return new Date(fp.getTime()+(TARGET_H-(ip-e)/3.6e6)*3.6e6);
+};
+
+const STAMPS = [
+  {label:"Timbra Entrata",       icon:"▶",color:"#22c55e"},
+  {label:"Inizio Pausa Pranzo",  icon:"⏸",color:"#f59e0b"},
+  {label:"Fine Pausa Pranzo",    icon:"▶",color:"#3b82f6"},
+  {label:"Timbra Uscita",        icon:"⏹",color:"#ef4444"},
+];
+
+function App() {
+  const [records,setRecords] = useState({});
+  const [now,setNow] = useState(new Date());
+  const [tab,setTab] = useState("oggi");
+  const [calMonth,setCalMonth] = useState(new Date());
+  const [selDay,setSelDay] = useState(null);
+  const [justStamped,setJustStamped] = useState(false);
+
+  useEffect(()=>{
+    try{ const d=localStorage.getItem(STORAGE_KEY); if(d)setRecords(JSON.parse(d)); }catch{}
+  },[]);
+
+  useEffect(()=>{ const t=setInterval(()=>setNow(new Date()),1000); return()=>clearInterval(t); },[]);
+
+  const save = rec => { setRecords(rec); try{localStorage.setItem(STORAGE_KEY,JSON.stringify(rec));}catch{} };
+
+  const stamp = () => {
+    const key=todayKey(), ts=new Date().toISOString();
+    const rec={...(records[key]||{})}, st=getState(rec);
+    if(st===0)rec.entrata=ts; else if(st===1)rec.inizioPausa=ts;
+    else if(st===2)rec.finePausa=ts; else if(st===3)rec.uscita=ts;
+    save({...records,[key]:rec});
+    setJustStamped(true); setTimeout(()=>setJustStamped(false),1200);
+  };
+
+  const today=records[todayKey()]||{}, state=getState(today);
+  const hours=calcHours(today,now), exitTime=calcExit(today);
+  const pct=Math.min(((hours||0)/TARGET_H)*100,100);
+  const countdown=exitTime?(()=>{const d=exitTime-now;if(d<=0)return null;const h=Math.floor(d/3.6e6),m=Math.floor((d%3.6e6)/60000);return`${h}h ${fmt2(m)}m`;})():null;
+
+  const calDays=(()=>{
+    const yr=calMonth.getFullYear(),mo=calMonth.getMonth();
+    const first=new Date(yr,mo,1).getDay(),total=new Date(yr,mo+1,0).getDate();
+    const days=Array((first+6)%7).fill(null);
+    for(let d=1;d<=total;d++){const k=`${yr}-${fmt2(mo+1)}-${fmt2(d)}`;days.push({d,k,rec:records[k]||null});}
+    return days;
+  })();
+
+  const monthTotal=(()=>{
+    const pfx=`${now.getFullYear()}-${fmt2(now.getMonth()+1)}`;
+    const entries=Object.entries(records).filter(([k])=>k.startsWith(pfx));
+    return{hrs:entries.reduce((s,[,r])=>s+(calcHours(r)||0),0),days:entries.length};
+  })();
+
+  const card={background:"#1e293b",borderRadius:12,padding:16,marginBottom:14};
+  const row=(b)=>({display:"flex",justifyContent:"space-between",alignItems:"center",padding:"8px 0",borderBottom:b?"1px solid #334155":"none"});
+
+  return (
+    <div style={{maxWidth:420,margin:"0 auto",minHeight:"100vh",background:"#0f172a",color:"white",display:"flex",flexDirection:"column"}}>
+      <div style={{background:"#1e293b",padding:16,textAlign:"center",borderBottom:"1px solid #334155"}}>
+        <div style={{fontSize:"2.8rem",fontWeight:"bold",letterSpacing:2,fontVariantNumeric:"tabular-nums"}}>{now.toLocaleTimeString("it-IT")}</div>
+        <div style={{color:"#94a3b8",fontSize:"0.85rem",marginTop:4}}>{now.toLocaleDateString("it-IT",{weekday:"long",day:"numeric",month:"long",year:"numeric"})}</div>
+      </div>
+
+      <div style={{display:"flex",background:"#1e293b",borderBottom:"1px solid #334155"}}>
+        {[["oggi","Oggi"],["calendario","Calendario"],["storico","Storico"]].map(([k,l])=>(
+          <button key={k} onClick={()=>setTab(k)} style={{flex:1,padding:12,border:"none",background:"transparent",
+            color:tab===k?"#3b82f6":"#94a3b8",fontWeight:tab===k?"bold":"normal",
+            borderBottom:tab===k?"2px solid #3b82f6":"2px solid transparent",cursor:"pointer",fontSize:"0.9rem"}}>{l}</button>
+        ))}
+      </div>
+
+      <div style={{flex:1,overflowY:"auto",padding:16}}>
+
+        {tab==="oggi"&&(
+          <div>
+            <div style={card}>
+              <div style={{color:"#64748b",fontSize:"0.75rem",textTransform:"uppercase",letterSpacing:1,marginBottom:10}}>Timbrature di oggi</div>
+              {[["🟢 Entrata",today.entrata],["🟡 Inizio Pausa",today.inizioPausa],["🔵 Fine Pausa",today.finePausa],["🔴 Uscita",today.uscita]].map(([l,v],i)=>(
+                <div key={i} style={row(i<3)}>
+                  <span style={{color:"#cbd5e1",fontSize:"0.9rem"}}>{l}</span>
+                  <span style={{fontWeight:"bold",fontVariantNumeric:"tabular-nums",color:v?"white":"#475569"}}>{fmtTime(v)}</span>
+                </div>
+              ))}
+            </div>
+
+            {hours!==null&&(
+              <div style={card}>
+                <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:10}}>
+                  <span style={{color:"#94a3b8"}}>Ore lavorate</span>
+                  <span style={{fontSize:"1.5rem",fontWeight:"bold",color:hours>=TARGET_H?"#22c55e":"white"}}>{fmtHours(hours)}</span>
+                </div>
+                <div style={{background:"#334155",borderRadius:6,height:8,overflow:"hidden"}}>
+                  <div style={{width:`${pct}%`,height:"100%",background:pct>=100?"#22c55e":"#3b82f6",transition:"width 0.5s"}}/>
+                </div>
+                <div style={{color:"#64748b",fontSize:"0.75rem",marginTop:6,textAlign:"right"}}>{Math.round(pct)}% di 8h</div>
+              </div>
+            )}
+
+            {exitTime&&(
+              <div style={{background:"#052e16",border:"1px solid #16a34a",borderRadius:12,padding:16,marginBottom:14,textAlign:"center"}}>
+                <div style={{color:"#86efac",fontSize:"0.8rem",marginBottom:6}}>🎯 Per fare 8 ore puoi uscire alle</div>
+                <div style={{fontSize:"3rem",fontWeight:"bold",color:"#22c55e",letterSpacing:2}}>{exitTime.toLocaleTimeString("it-IT",{hour:"2-digit",minute:"2-digit"})}</div>
+                {countdown?<div style={{color:"#86efac",fontSize:"0.85rem",marginTop:6}}>⏱ Mancano ancora {countdown}</div>
+                          :<div style={{color:"#22c55e",fontSize:"0.85rem",marginTop:6}}>✅ Puoi uscire ora!</div>}
+              </div>
+            )}
+
+            {state<4?(
+              <button onClick={stamp} style={{width:"100%",padding:20,fontSize:"1.15rem",fontWeight:"bold",
+                background:justStamped?"#1e293b":STAMPS[state].color,
+                color:justStamped?STAMPS[state].color:"white",
+                border:`2px solid ${STAMPS[state].color}`,borderRadius:14,cursor:"pointer",
+                boxShadow:justStamped?"none":`0 0 24px ${STAMPS[state].color}50`,transition:"all 0.3s"}}>
+                {justStamped?"✓ Timbrato!":`${STAMPS[state].icon}  ${STAMPS[state].label}`}
+              </button>
+            ):(
+              <div style={{textAlign:"center",padding:20,color:"#22c55e",background:"#052e16",borderRadius:14,border:"1px solid #16a34a"}}>
+                ✅ Giornata completata! Buon riposo 🙌
+              </div>
+            )}
+
+            <div style={{display:"flex",justifyContent:"center",gap:10,marginTop:20}}>
+              {[1,2,3,4].map(i=>(
+                <div key={i} style={{width:10,height:10,borderRadius:"50%",transition:"background 0.3s",
+                  background:state>=i?["","#22c55e","#f59e0b","#3b82f6","#ef4444"][i]:"#334155"}}/>
+              ))}
+            </div>
+          </div>
+        )}
+
+        {tab==="calendario"&&(
+          <div>
+            <div style={{display:"flex",alignItems:"center",justifyContent:"space-between",marginBottom:16}}>
+              <button onClick={()=>setCalMonth(new Date(calMonth.getFullYear(),calMonth.getMonth()-1,1))}
+                style={{background:"#1e293b",border:"1px solid #334155",color:"white",padding:"8px 14px",borderRadius:8,cursor:"pointer",fontSize:"1.2rem"}}>‹</button>
+              <span style={{fontWeight:"bold",textTransform:"capitalize"}}>{calMonth.toLocaleDateString("it-IT",{month:"long",year:"numeric"})}</span>
+              <button onClick={()=>setCalMonth(new Date(calMonth.getFullYear(),calMonth.getMonth()+1,1))}
+                style={{background:"#1e293b",border:"1px solid #334155",color:"white",padding:"8px 14px",borderRadius:8,cursor:"pointer",fontSize:"1.2rem"}}>›</button>
+            </div>
+            <div style={{display:"grid",gridTemplateColumns:"repeat(7,1fr)",gap:3,marginBottom:4}}>
+              {["L","M","M","G","V","S","D"].map((d,i)=><div key={i} style={{textAlign:"center",color:"#475569",fontSize:"0.75rem",padding:"4px 0"}}>{d}</div>)}
+            </div>
+            <div style={{display:"grid",gridTemplateColumns:"repeat(7,1fr)",gap:3}}>
+              {calDays.map((day,i)=>{
+                if(!day)return<div key={i}/>;
+                const st=getState(day.rec),isToday=day.k===todayKey();
+                return(
+                  <button key={i} onClick={()=>setSelDay(selDay===day.k?null:day.k)} style={{
+                    background:st===4?"#052e16":st>=1?"#0c1a2e":"#1e293b",
+                    border:`2px solid ${isToday?"#3b82f6":st===4?"#16a34a":st>=1?"#1d4ed8":"#334155"}`,
+                    borderRadius:8,padding:"6px 2px",cursor:"pointer",color:"white",textAlign:"center",minHeight:46}}>
+                    <div style={{fontSize:"0.9rem",fontWeight:isToday?"bold":"normal"}}>{day.d}</div>
+                    {st===4&&<div style={{fontSize:"0.6rem",color:"#86efac"}}>{fmtHours(calcHours(day.rec))}</div>}
+                    {st>=1&&st<4&&<div style={{fontSize:"0.65rem",color:"#93c5fd"}}>…</div>}
+                  </button>
+                );
+              })}
+            </div>
+            {selDay&&records[selDay]&&(
+              <div style={{...card,marginTop:16}}>
+                <div style={{fontWeight:"bold",marginBottom:12,color:"#93c5fd",textTransform:"capitalize"}}>
+                  {new Date(selDay+"T12:00:00").toLocaleDateString("it-IT",{weekday:"long",day:"numeric",month:"long"})}
+                </div>
+                {[["🟢 Entrata",records[selDay].entrata],["🟡 Inizio Pausa",records[selDay].inizioPausa],
+                  ["🔵 Fine Pausa",records[selDay].finePausa],["🔴 Uscita",records[selDay].uscita]].map(([l,v],i)=>(
+                  <div key={i} style={row(i<3)}>
+                    <span style={{color:"#cbd5e1",fontSize:"0.9rem"}}>{l}</span>
+                    <span style={{fontWeight:"bold",color:v?"white":"#475569"}}>{fmtTime(v)}</span>
+                  </div>
+                ))}
+                <div style={{display:"flex",justifyContent:"space-between",marginTop:12,paddingTop:12,borderTop:"1px solid #334155"}}>
+                  <span style={{color:"#94a3b8"}}>Ore totali</span>
+                  <span style={{fontWeight:"bold",color:"#22c55e"}}>{fmtHours(calcHours(records[selDay]))}</span>
+                </div>
+              </div>
+            )}
+            <div style={{...card,marginTop:16,textAlign:"center",border:"1px solid #334155"}}>
+              <div style={{color:"#64748b",fontSize:"0.8rem",marginBottom:6}}>Totale mese corrente</div>
+              <div style={{fontSize:"2rem",fontWeight:"bold",color:"#3b82f6"}}>{fmtHours(monthTotal.hrs)}</div>
+              <div style={{color:"#475569",fontSize:"0.8rem",marginTop:4}}>{monthTotal.days} giorni lavorativi</div>
+            </div>
+          </div>
+        )}
+
+        {tab==="storico"&&(
+          <div>
+            {Object.keys(records).length===0?(
+              <div style={{textAlign:"center",color:"#475569",padding:40}}>Nessuna timbratura ancora</div>
+            ):(
+              <>
+                {Object.keys(records).sort((a,b)=>b.localeCompare(a)).map(k=>{
+                  const r=records[k],st=getState(r),hrs=calcHours(r);
+                  return(
+                    <div key={k} style={{background:"#1e293b",borderRadius:10,padding:14,marginBottom:10,
+                      borderLeft:`3px solid ${st===4?"#22c55e":st>=1?"#3b82f6":"#475569"}`}}>
+                      <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:8}}>
+                        <span style={{fontWeight:"bold",fontSize:"0.9rem",textTransform:"capitalize"}}>
+                          {new Date(k+"T12:00:00").toLocaleDateString("it-IT",{weekday:"short",day:"numeric",month:"short",year:"numeric"})}
+                        </span>
+                        <span style={{color:hrs>=TARGET_H?"#22c55e":"#94a3b8",fontWeight:"bold"}}>{fmtHours(hrs)}</span>
+                      </div>
+                      <div style={{display:"flex",flexWrap:"wrap",gap:8,fontSize:"0.78rem",color:"#64748b"}}>
+                        <span>🟢 {fmtTime(r.entrata)}</span><span>🟡 {fmtTime(r.inizioPausa)}</span>
+                        <span>🔵 {fmtTime(r.finePausa)}</span><span>🔴 {fmtTime(r.uscita)}</span>
+                      </div>
+                    </div>
+                  );
+                })}
+                <div style={{...card,textAlign:"center",border:"1px solid #334155"}}>
+                  <div style={{color:"#64748b",fontSize:"0.8rem",marginBottom:4}}>Totale mese corrente</div>
+                  <div style={{fontSize:"1.8rem",fontWeight:"bold",color:"#3b82f6"}}>{fmtHours(monthTotal.hrs)}</div>
+                  <div style={{color:"#475569",fontSize:"0.8rem"}}>{monthTotal.days} giorni</div>
+                </div>
+              </>
+            )}
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
+ReactDOM.createRoot(document.getElementById("root")).render(<App/>);
+</script>
+</body>
+</html>
