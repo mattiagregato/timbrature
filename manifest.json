@@ -1,0 +1,19 @@
+{
+  "name": "Timbrature",
+  "short_name": "Timbrature",
+  "description": "Timbrature di lavoro giornaliere",
+  "start_url": "./",
+  "scope": "./",
+  "display": "standalone",
+  "background_color": "#0f172a",
+  "theme_color": "#1e293b",
+  "orientation": "portrait-primary",
+  "icons": [
+    {
+      "src": "icon.svg",
+      "sizes": "any",
+      "type": "image/svg+xml",
+      "purpose": "any maskable"
+    }
+  ]
+}
