@@ -13,6 +13,7 @@
 <script src="https://cdnjs.cloudflare.com/ajax/libs/react/18.2.0/umd/react.production.min.js"></script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/react-dom/18.2.0/umd/react-dom.production.min.js"></script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/babel-standalone/7.23.2/babel.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
 <style>
   *{box-sizing:border-box;margin:0;padding:0;-webkit-tap-highlight-color:transparent}
   body{background:#0f172a;color:white;font-family:system-ui,sans-serif}
@@ -32,6 +33,7 @@ const fmt2 = n => String(n).padStart(2,"0");
 const todayKey = () => { const d=new Date(); return `${d.getFullYear()}-${fmt2(d.getMonth()+1)}-${fmt2(d.getDate())}`; };
 const fmtTime = iso => iso ? new Date(iso).toLocaleTimeString("it-IT",{hour:"2-digit",minute:"2-digit"}) : "--:--";
 const fmtHours = h => { if(h===null||isNaN(h))return"--"; const hh=Math.floor(h),mm=Math.round((h-hh)*60); return `${hh}h ${fmt2(mm)}m`; };
+const fmtHoursDecimal = h => { if(h===null||isNaN(h))return"0:00"; const hh=Math.floor(h),mm=Math.round((h-hh)*60); return `${hh}:${fmt2(mm)}`; };
 const getState = r => { if(!r||!r.entrata)return 0; if(!r.inizioPausa)return 1; if(!r.finePausa)return 2; if(!r.uscita)return 3; return 4; };
 
 const calcHours = (r, now=new Date()) => {
@@ -64,6 +66,7 @@ function App() {
   const [calMonth,setCalMonth] = useState(new Date());
   const [selDay,setSelDay] = useState(null);
   const [justStamped,setJustStamped] = useState(false);
+  const [reportMonth,setReportMonth] = useState(`${new Date().getFullYear()}-${fmt2(new Date().getMonth()+1)}`);
 
   useEffect(()=>{
     try{ const d=localStorage.getItem(STORAGE_KEY); if(d)setRecords(JSON.parse(d)); }catch{}
@@ -80,6 +83,53 @@ function App() {
     else if(st===2)rec.finePausa=ts; else if(st===3)rec.uscita=ts;
     save({...records,[key]:rec});
     setJustStamped(true); setTimeout(()=>setJustStamped(false),1200);
+  };
+
+  const exportExcel = () => {
+    const entries = Object.entries(records)
+      .filter(([k]) => k.startsWith(reportMonth))
+      .sort(([a],[b]) => a.localeCompare(b));
+
+    if(entries.length === 0) { alert("Nessun dato per questo mese."); return; }
+
+    const rows = entries.map(([k,r]) => {
+      const hrs = calcHours(r);
+      return {
+        "Data": new Date(k+"T12:00:00").toLocaleDateString("it-IT",{day:"2-digit",month:"2-digit",year:"numeric"}),
+        "Giorno": new Date(k+"T12:00:00").toLocaleDateString("it-IT",{weekday:"long"}),
+        "Entrata": fmtTime(r.entrata),
+        "Inizio Pausa": fmtTime(r.inizioPausa),
+        "Fine Pausa": fmtTime(r.finePausa),
+        "Uscita": fmtTime(r.uscita),
+        "Ore Lavorate": fmtHoursDecimal(hrs),
+        "Stato": getState(r)===4 ? "✓ Completa" : "⚠ Incompleta",
+      };
+    });
+
+    const totalHrs = entries.reduce((s,[,r])=>s+(calcHours(r)||0),0);
+    rows.push({
+      "Data": "TOTALE MESE",
+      "Giorno": `${entries.length} giorni`,
+      "Entrata": "",
+      "Inizio Pausa": "",
+      "Fine Pausa": "",
+      "Uscita": "",
+      "Ore Lavorate": fmtHoursDecimal(totalHrs),
+      "Stato": "",
+    });
+
+    const ws = XLSX.utils.json_to_sheet(rows);
+
+    // Larghezza colonne
+    ws["!cols"] = [
+      {wch:12},{wch:14},{wch:10},{wch:14},{wch:12},{wch:10},{wch:14},{wch:12}
+    ];
+
+    const wb = XLSX.utils.book_new();
+    const [yr,mo] = reportMonth.split("-");
+    const monthName = new Date(yr,mo-1,1).toLocaleDateString("it-IT",{month:"long",year:"numeric"});
+    XLSX.utils.book_append_sheet(wb, ws, `Timbrature ${monthName}`);
+    XLSX.writeFile(wb, `timbrature_${reportMonth}.xlsx`);
   };
 
   const today=records[todayKey()]||{}, state=getState(today);
@@ -118,6 +168,8 @@ function App() {
         ))}
       </div>
       <div style={{flex:1,overflowY:"auto",padding:16}}>
+
+        {/* ── OGGI ── */}
         {tab==="oggi"&&(
           <div>
             <div style={card}>
@@ -170,6 +222,8 @@ function App() {
             </div>
           </div>
         )}
+
+        {/* ── CALENDARIO ── */}
         {tab==="calendario"&&(
           <div>
             <div style={{display:"flex",alignItems:"center",justifyContent:"space-between",marginBottom:16}}>
@@ -223,8 +277,31 @@ function App() {
             </div>
           </div>
         )}
+
+        {/* ── STORICO + REPORT ── */}
         {tab==="storico"&&(
           <div>
+            {/* Export Excel */}
+            <div style={{...card,border:"1px solid #1d4ed8",background:"#0c1a2e"}}>
+              <div style={{color:"#93c5fd",fontSize:"0.8rem",textTransform:"uppercase",letterSpacing:1,marginBottom:12}}>📊 Report Mensile Excel</div>
+              <div style={{display:"flex",gap:10,alignItems:"center"}}>
+                <input
+                  type="month"
+                  value={reportMonth}
+                  onChange={e=>setReportMonth(e.target.value)}
+                  style={{flex:1,background:"#1e293b",border:"1px solid #334155",color:"white",
+                    padding:"10px 12px",borderRadius:8,fontSize:"0.95rem",outline:"none"}}
+                />
+                <button onClick={exportExcel} style={{
+                  background:"#2563eb",color:"white",border:"none",
+                  padding:"10px 16px",borderRadius:8,cursor:"pointer",
+                  fontWeight:"bold",fontSize:"0.9rem",whiteSpace:"nowrap"}}>
+                  ⬇ Scarica
+                </button>
+              </div>
+            </div>
+
+            {/* Lista storico */}
             {Object.keys(records).length===0?(
               <div style={{textAlign:"center",color:"#475569",padding:40}}>Nessuna timbratura ancora</div>
             ):(
